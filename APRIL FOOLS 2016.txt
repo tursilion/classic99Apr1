@@ -1,0 +1,130 @@
+Create a "Classic99" cartridge for the real TI-99/4A.
+Easiest way to do it is a bank-switched 16k cartridge that relies on the startup bank, and switches to the other one so that after you select 'Classic99' it reboots and is no longer visible on the startup menu.
+
+It could be F18A enhanced - use the bitmap layer to draw a Classic99 Windows-style Window frame around the edge of the screen. We could use a little piece of GPU code to watch VDP and see if anything messes with our VDP settings to turn it off cleanly (which would happen on any cartridge launch, that's okay).
+
+--
+
+For sake of expediency, here is what I am thinking:
+
+-ROM/GROM cart so it can run on an UberGROM-- this makes it possible to include Editor/Assembler and Extended BASIC "built-in". Maybe also A-Maze-Ing since that was the first title I ever emulated, and Demonstration. Set them up on a single menu screen when Classic99 starts (that resembles the Classic99 Cartridge->Menu option being open!)
+-Installs a user interrupt hook that relocates the display from >0000 to somewhere else (>3000? look around). The user interrupt copies a few bytes from >0000 to >3000 every frame to mimic the display update, maybe one scanline. This also allows me to draw an ACTUAL Classic99 window and preserve it for most apps.
+-The characters used for the Classic99 window would need to be rarely affected by XB... have to figure out if there is a safe place for the screen and anything in the character set we can steal. We can edit XB if it helps (and if we can figure out where). E/A and other GPL apps are a lessor concern. (Actually.. see how XB256 did it, maybe?)
+-Naturally some apps won't work. "it's an alpha!" ;) We live with it and just make it work with the provided titles.
+-The interrupt hook can preserve itself against reboots -- when it sees a GROM address that is in the startup range before the hook is cleared, it does the init by itself and skips over the interrupt hook clear before resuming GPL.
+-We could also detect if no longer running GPL by the interrupt return address, but let's face it, the damage is already done by that part, just accept it. We run or we crash or nothing happens, no big deal. ;)
+
+GROM Startup code in the cart runs AFTER all cards, so we can reserve some space in VDP for the screen... make the new screen location >3800 and push the DSR buffers down by however much is already allocated. We can allocate a few extra bytes and tag them 'Classic99' so we know we have already done it, the disk DSR will overwrite them (but Classic99's won't... still, if we are executing powerup, we can assume that we need to do it.)
+
+
+Console GPL powerup -- if GPL address is from >0053 to >00DC, do this powerup and jump GPL to >00DE.
+This is to preserve our CPU interrupt hook through a reboot. NOTE this is slightly different from the
+addresses in TI Intern, but it matches my settings.
+
+* GROM init replacement from >0053 (004F in TI Intern)
+* only run this *ONLY* if the GROM address matched, since we jump back to the interpreter
+
+  LWPI >83E0        * should already be on it, but to be sure
+
+
+  CLR @>83CE        * clear sound bytes
+  LI R0,>709F       * speech write and mute sound channels
+  MOVB R0,@>9400
+  SWPB R0
+  MOVB R0,@>8400
+  LI R0,>BFDF
+  MOVB R0,@>8400
+  SWPB R0
+  MOVB R0,@>8400
+  LI R0,>FF00
+  MOVB R0,@>8400
+  
+  LI R0,>FF7E       * load data/substack
+  MOV R0,@>8372
+  
+  LI R0,REGS        * load VDP registers
+  LI R1,7
+LP1
+  MOV *R0+,R2
+  MOVB R2,>8C00
+  SWPB R2
+  MOVB R2,>8C00
+  DEC R1
+  JNE LP1
+  
+  LI R0,>8300       * clear scratchpad 00-71
+  LI R1,57
+LP2
+  CLR *R0+
+  DEC R1
+  JNE LP2
+  LI R0,>8382       * 82-c0
+  LI R1,31
+LP3
+  CLR *R0+
+  DEC R1
+  JNE LP3
+  LI R0,>8374       * 74-7f
+  LI R1,6
+LP4
+  CLR *R0+
+  DEC R1
+  JNE LP4
+  LI R0,>83C2       * c2-ca
+  LI R1,4
+LP5
+  CLR *R0+
+  DEC R1
+  JNE LP5
+  
+* I/O: 
+* - W: CRU address (load in R12 and then multiply by 2)  
+* - B: Number of bits to load
+* - B: Address + >8300 to load from
+  CLR R1
+  
+  LI R12,>06        * 9901 set CRU (very sneaky in GROM version!)
+  LDCR R1,8
+  
+  CLR R12
+  SBZ >20
+  SBZ >30
+  
+  SETO R1
+
+  SBO >04
+  SBO >02
+  
+  LI R12,>2c
+  LDCR R1,2
+
+  LI R1,>0479       * print accept tone
+  MOV R1,@>83CC     * set address
+  ANDI R14,>FFFE    * flag for GROM sound data
+  LI R1,>0100       * countdown byte
+  MOVB R1,@>83CE    * set to start playback on interrupt
+  
+  * now we skip all the VDP RAM checks and just set as though the top of
+  * VRAM was at >3800 instead of >4000
+  LI R1,>0800
+  MOVB R1,@>83FD
+  LI R1,>37FF
+  MOV R1,@>8370
+
+* end of GROM init replacement  
+
+  LI R0,INTERRUPT
+  MOV R0,@>83C4
+  CLR R8
+
+  LI R6,>00DE
+  B @>0060     * continue GPL from new address
+
+* VDP registers with command bits already set, taken from TI Internet
+* except the screen table is actually at >3800. Bits are masked to
+* valid 9918A settings.
+REGS
+  DATA >2081,>0782,>0e83,>0184,>0685,>0086,>f787
+  
+  
+  

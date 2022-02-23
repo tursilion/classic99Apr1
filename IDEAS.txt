@@ -1,0 +1,11 @@
+Some ideas that could improve the limitations:
+
+-We could live in SuperCart space (or be a ROM cart, which was the original idea) to prevent programs from overwriting us
+
+-LOADER (for EA3 autostart) is loaded to RAM by GPL, we could patch it to call our fixup code before letting it start.
+
+-Fixup code could scan the lower 8k space, too, it's fast enough now.
+
+-For programs that don't enable interrupt hooks, we could look for other hook opportunities. For instance, it should be harmless in most cases to replace KSCAN calls with our own hook, since KSCAN changes the VDP address. We can patch the E/A loaded BLWP version and scan RAM for BL @>000E for the direct approach. (That's probably the only useful one, but wins a few more programs?) Alternately, we don't need to patch the E/A one either, our scan should pick it up. ;) We could try getting VERY tricky and look for functions that appear to be setting the VDP address. Since we know VDP will be corrupted anyway we can take a chance that GROM won't matter (since it won't to most asm programs), and patch those out too. We may interfere with programs that are trying to write in vblank but it doesn't seem to matter on the TI.
+
+(That whole patching thing would be an interesting part of a future OS I'll never write, where we analyze the code for hardware accesses and patch them to use calls instead.)

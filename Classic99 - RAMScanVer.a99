@@ -1,0 +1,429 @@
+* TODO: audit the scan range for detecting
+* interrupt hook settings... Mr Chin only works
+* when I do 1k per cycle, but 480*2 bytes doesn't
+* maybe we can start later than A000... scan all
+* my program files to get a range of where it's set ;)
+
+
+* Test with:
+* MUNCH1
+* X\RAINBOW (basic)
+* VGMCPLAY2R
+* MRCHIN
+* ARCTURUS1 (title page only, then crashes but can quit)
+* QUIT (must be quick, call long quit a 'feature' ;) )
+
+
+* Classic99 for TI-99/4A
+* April Fools 2016 by Tursi
+* All we really do is put a title bar on the top
+* of the screen, and use some interrupt trickery
+* to keep it there no matter what.
+* Many asm programs will steal the hook, sadly
+* sometimes we even miss the powerup sequence somehow
+
+  DEF START
+  
+* Console GPL powerup -- if GPL address is from >0053 to >00DC, 
+* do this powerup and jump GPL to >00DE.
+* This is to preserve our CPU interrupt hook through a reboot. 
+* NOTE this is slightly different from the
+* addresses in TI Intern, but it matches my settings.
+* GROM init replacement from >0053 (004F in TI Intern)
+* only run this *ONLY* if the GROM address matched, since we 
+* jump back to the interpreter
+  
+  AORG >3B80
+
+
+NEWPOWER
+
+  LWPI >83E0        * should already be on it, but to be sure
+
+
+  CLR @>83CE        * clear sound bytes
+  LI R0,>709F       * speech write and mute sound channels
+  MOVB R0,@>9400
+  SWPB R0
+  MOVB R0,@>8400
+  LI R0,>BFDF
+  MOVB R0,@>8400
+  SWPB R0
+  MOVB R0,@>8400
+  LI R0,>FF00
+  MOVB R0,@>8400
+  
+  LI R0,>FF7E       * load data/substack
+  MOV R0,@>8372
+  
+  LI R0,REGS        * load VDP registers
+  LI R1,8
+LP1
+  MOV *R0+,R2
+  MOVB R2,@>8C02
+  SWPB R2
+  MOVB R2,@>8C02
+  DEC R1
+  JNE LP1
+  CLR R2
+  
+  LI R0,>8300       * clear scratchpad 00-71
+  LI R1,56
+LP2
+  CLR *R0+
+  DEC R1
+  JNE LP2
+  MOVB R2,*R0
+  
+  LI R0,>8382       * 82-c0
+  LI R1,31
+LP3
+  CLR *R0+
+  DEC R1
+  JNE LP3
+  
+  LI R0,>8374       * 74-7f
+  LI R1,5
+LP4
+  CLR *R0+
+  DEC R1
+  JNE LP4
+  MOVB R2,*R0
+  
+  LI R0,>83C2       * c2-ca
+  LI R1,4
+LP5
+  CLR *R0+
+  DEC R1
+  JNE LP5
+  
+* I/O: 
+* - W: CRU address (load in R12 and then multiply by 2)  
+* - B: Number of bits to load
+* - B: Address + >8300 to load from
+  CLR R1
+  
+  LI R12,>06        * 9901 set CRU (very sneaky in GROM version!)
+  LDCR R1,8
+  
+  CLR R12
+  SBZ >20
+  SBZ >30
+  
+  SETO R1
+
+  SBO >04
+  SBO >02
+  
+  LI R12,>2c
+  LDCR R1,2
+
+  LI R1,>0479       * print accept tone
+  MOV R1,@>83CC     * set address
+  ANDI R14,>FFFE    * flag for GROM sound data
+  LI R1,>0100       * countdown byte
+  MOVB R1,@>83CE    * set to start playback on interrupt
+  
+* now we skip all the VDP RAM checks and just set as though the top of
+* VRAM was at >3800 instead of >4000
+  LI R1,>0800
+  MOVB R1,@>83FD
+  LI R1,>37FF
+  MOV R1,@>8370
+
+* end of GROM init replacement  
+
+* init our screen address in VDP so the title draws first
+  li r1,>007c       * 3C00
+  movb r1,@>8c02
+  swpb r1
+  movb r1,@>8c02
+  li r0,>0302       * screen copy offset (2 bytes)
+  movb r0,@>8c00
+  swpb r0
+  movb r0,@>8c00
+  li r0,>a000       * CPU memory test address (2 bytes)
+  movb r0,@>8c00
+  swpb r0
+  movb r0,@>8c00
+  clr r0
+  movb r0,@>8c00    * TI BASIC flag (1 byte)
+  clr @chain       * clear our interrupt chain address
+
+* set our interrupt handler and return to GPL
+  LI R0,INTERRUPT
+  MOV R0,@>83C4
+  CLR R8
+
+  LI R6,>00DE
+  B @>0060     * continue GPL from new address
+
+* VDP registers with command bits already set, taken from TI Internet
+* except the screen table is actually at >3800. Bits are masked to
+* valid 9918A settings.
+REGS
+  DATA >0080,>E081,>0e82,>0e83,>0184,>0685,>0086,>f787
+  
+* new interrupt routine -- does two things. First,
+* it checks for reboot and takes over the console startup
+* in order to preserve itself. Second, it copies any
+* graphics screen from >0000 to >3800 a little bit at a time  
+INTERRUPT
+ 
+* check GROM address.
+  MOVB @>9802,R0
+  SWPB R0
+  movb @>9802,R0
+  swpb r0
+  ci r0,>0053
+  jl nopwr
+  ci r0,>00dc
+  jh nopwr
+  b @NEWPOWER
+
+nopwr
+* not in the startup routine
+* while we have it, check for TI BASIC
+  clr r2
+  ci r0,>2000
+  jl notbas
+  ci r0,>3FFF
+  jh notbas
+  seto r2
+notbas
+
+* so restore the GROM address
+* (crashy if we don't do this)
+  dec r0
+  movb r0,@>9c02
+  swpb r0
+  movb r0,@>9c02
+
+* now copy a couple rows of screen data
+* first fixup VDP R2 to keep our special SIT
+  li r0,>0e82
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02
+
+* the only safe place we have for data is VDP, so we save stuff there
+* well, I guess we can save a little bit outside of VDP... oh well.
+  li r0,>003c   * >3c00 -room for text mode someday too... (yeah right)
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02
+  nop
+  movb @>8800,r0 * get next screen address
+  swpb r0
+  movb @>8800,r0
+  swpb r0
+  movb @>8800,r6 * next CPU test address
+  swpb r6
+  movb @>8800,r6
+  swpb r6
+  movb r2,r2     * did we already set BASIC flag?
+  jne skipread
+  movb @>8800,r2 * TI BASIC flag (once in we stay till reset)
+skipread
+  
+* check if off end of screen and reset
+  ci r0,>300
+  jl nowrap
+
+* fix VDPR2 to point to our table in case it got changed
+* hope for the best with the rest
+  li r0,>0e82
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02  
+
+* print the banner instead of copying
+  li r0,>0078     * VDP address to >3800
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02
+
+* check if we are in TI BASIC, if so
+* we add >60 for screen offset, which won't be perfect but it'll do
+  movb r2,r2
+  jeq nobas
+  li r0,BANNER2   * TI BASIC active
+  jmp runcpy
+
+nobas
+  li r0,banner
+
+runcpy
+  li r1,32
+bnlp
+  movb *r0+,@>8c00
+  dec r1
+  jne bnlp
+* now update the character set (probably)
+  mov *r0,r0   * get address
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02
+  li r1,>AA55  * set pattern
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  swpb r1
+  movb r1,@>8c00
+  
+  li r0,32     * next address to copy
+  jmp finish  
+  
+nowrap
+* copy 64 bytes from r0 to r0+3800
+* we do four bytes at a time for performance's sake
+  mov r0,r1
+  ai r1,>7800
+  swpb r1
+  swpb r0
+  li r5,16  * 64/4
+  
+cplp
+  movb r0,@>8c02
+  swpb r0
+  movb r0,@>8c02
+  inct r0
+  inct r0
+  swpb r0
+  
+  movb @>8800,r3
+  swpb r3
+  movb @>8800,r3
+  swpb r3
+  movb @>8800,r4
+  swpb r4
+  movb @>8800,r4
+  swpb r4
+  
+  movb r1,@>8c02
+  swpb r1
+  movb r1,@>8c02
+  inct r1
+  inct r1
+* swpb r1 inserted between writes below
+  
+  movb r3,@>8c00
+  swpb r3
+  movb r3,@>8c00
+  swpb r1  * delayed this swap to have useful work here
+  movb r4,@>8c00
+  swpb r4
+  movb r4,@>8c00
+      
+  dec r5
+  jne cplp
+  swpb r0
+  
+finish
+* not really finish - scan CPU memory for interrupt thieves
+  li r5,512
+  li r3,>83c4
+flp1
+  c *r6+,r3
+  jeq match1
+  c *r6+,r3
+  jeq match1
+  dect r5
+  jne flp1
+wrapup  
+  ci r6,>e800
+  jl saveback
+  li r6,>a000
+  jmp saveback
+
+match1
+  dect r6
+  dect r6
+  mov *r6+,r1
+  andi r1,>FFF0
+  ci r1,>C800
+  jeq match2
+  inct r6
+  dec r5
+  jne flp1
+  jmp wrapup
+  
+* looks like MOV Rx,@>83C4, so patch it
+* we kind of have to just hope we're fast enough,
+* there's a good? chance we won't be, but
+* we should scan all 24k in 1/2 second.
+* or I could reduce the range and just check the first
+* k, that will catch most cases?
+match2
+  li r1,chain
+  mov r1,*r6+
+  dec r5
+  jne flp1
+  jmp wrapup
+
+saveback
+* write r0 back
+  li r1,>007c
+  movb r1,@>8c02
+  swpb r1
+  movb r1,@>8c02
+  nop
+  movb r0,@>8c00
+  swpb r0
+  movb r0,@>8c00
+  nop
+  movb r6,@>8c00
+  swpb r6
+  movb r6,@>8c00
+  nop
+  movb r2,@>8c00
+  mov @chain,r12
+  jeq nochain
+  B *r12
+nochain  
+  B *r11
+  
+* title banners 
+banner
+  TEXT '___________CLASSIC99____________'
+  DATA >f84A
+banner2
+  TEXT '                                '
+  DATA >f845
+* we chain any interrupt stored here
+chain
+  DATA >0000
+  
+* entry here -- just go set up the interrupt,
+* it will jump back into GPL
+* some of this is overwritten by E/A, that's ok
+
+START
+* make banner2
+  LI R0,BANNER
+  LI R1,BANNER2
+  LI R2,32
+FIXUPLP  
+  MOVB *R0+,R3
+  AI R3,>6000
+  MOVB R3,*R1+
+  DEC R2
+  JNE FIXUPLP
+* Now go setup the system  
+  B @NEWPOWER
+  
+  END
+  
+  
+  
+  
